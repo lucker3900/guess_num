@@ -223,22 +223,48 @@ class HandwritingInput:
         self.canvas.delete('all')
         self.draw_grid()
         
-        # 在清除画布后，将"未识别"节点填充为黑色
+        # 在清除画布后，重置神经网络可视化
         if hasattr(self, 'nn_canvas'):
             # 重置所有节点
             self._reset_all_node_fills()
+            
+            # 将所有连接线重置为灰色
+            # 重置输入层到隐藏层的连接
+            for i in range(25):
+                for j in range(25):
+                    tag = f'ih_{i}_{j}'
+                    items = self.nn_canvas.find_withtag(tag)
+                    if items:
+                        self.nn_canvas.itemconfig(tag, fill="#dddddd", width=0.5)
+            
+            # 重置隐藏层到输出层的连接
+            for j in range(25):
+                for k in range(11):
+                    tag = f'ho_{j}_{k}'
+                    items = self.nn_canvas.find_withtag(tag)
+                    if items:
+                        self.nn_canvas.itemconfig(tag, fill="#dddddd", width=0.5)
+            
             # 将未识别节点(索引10)填满
             self.nn_canvas.itemconfig('output_10', fill='black')
             # 重置其他输出节点
             for k in range(10):
                 self.nn_canvas.itemconfig(f'output_{k}', fill='white')
 
-    def line_color(self, weight):
-        """根据权重值设置连接线颜色"""
-        color = 'green' if weight > 0 else 'red'
-        alpha = min(abs(weight), 0.1)
-        #return f'#{int(alpha*30):02x}ff{int(alpha*30):02x}' if color == 'green' else f'#ff{int(alpha*30):02x}{int(alpha*30):02x}'
-        return "#dddddd"
+    def line_color(self, weight, active=False):
+        """根据权重值和激活状态设置连接线颜色"""
+        if not active:
+            return "#dddddd"  # 非激活状态显示为灰色
+        
+        # 激活状态下，根据权重显示颜色
+        if weight > 0:
+            # 正权重显示为绿色
+            intensity = min(abs(weight), 1.0) * 200
+            return f'#{255-int(intensity):02x}ff{255-int(intensity):02x}'
+        else:
+            # 负权重显示为红色
+            intensity = min(abs(weight), 1.0) * 200
+            return f'#ff{255-int(intensity):02x}{255-int(intensity):02x}'
 
     def draw_neural_network(self):
         """绘制神经网络可视化图"""
@@ -276,10 +302,13 @@ class HandwritingInput:
             # 连接到隐藏层
             for j in range(hidden_nodes):
                 hidden_y = (j + 1) * hidden_y_spacing
+                # 输入层到隐藏层连接
                 self.nn_canvas.create_line(
                     layer_x[0] + node_radius, y,
                     layer_x[1] - node_radius, hidden_y,
-                    fill=self.line_color(self.weights['input_hidden'][i][j]), width=0.5
+                    fill=self.line_color(self.weights['input_hidden'][i][j], active=False), 
+                    width=0.5,
+                    tags=f'ih_{i}_{j}'
                 )
 
         # 绘制隐藏层
@@ -293,10 +322,13 @@ class HandwritingInput:
             # 连接到输出层
             for k in range(output_nodes):
                 output_y = (k + 1) * output_y_spacing
+                # 隐藏层到输出层连接
                 self.nn_canvas.create_line(
                     layer_x[1] + node_radius, y,
                     layer_x[2] - node_radius, output_y,
-                    fill=self.line_color(self.weights['hidden_output'][j][k]), width=0.5
+                    fill=self.line_color(self.weights['hidden_output'][j][k], active=False), 
+                    width=0.5,
+                    tags=f'ho_{j}_{k}'
                 )
 
         # 绘制输出层
@@ -312,7 +344,7 @@ class HandwritingInput:
             self.nn_canvas.create_text(
                 layer_x[2] + 50, y,
                 text=label_text,
-                font=('Arial', 8)
+                font=('Arial', 10)
             )
 
         # 初始状态下将"未识别"节点填充为黑色
@@ -666,119 +698,92 @@ class HandwritingInput:
     def update_neural_network_visualization(self, probabilities):
         """根据预测结果更新神经网络可视化"""
         if hasattr(self, 'nn_canvas'):
-            # 重置所有节点的填充效果
+            print("\n开始更新神经网络可视化...")
             self._reset_all_node_fills()
             
-            # 1. 处理输入节点 - 使用Flatten后的特征向量
-            if hasattr(self, 'feature_extractor') and hasattr(self, 'last_features') and self.last_features is not None:
-                # 使用提取的特征向量填充输入节点
-                features = self.last_features[0]  # 去掉batch维度
-                feature_len = len(features)
-                
-                # 选择或采样25个特征点用于输入节点
-                input_features = np.zeros(25)
-                if feature_len >= 25:
-                    # 均匀采样特征向量中的25个点
-                    indices = np.linspace(0, feature_len-1, 25).astype(int)
-                    input_features = features[indices]
-                else:
-                    # 如果特征少于25个，全部使用并填充
-                    input_features[:feature_len] = features
-                
-                # 对特征进行归一化 - 使用绝对值
-                feature_abs = np.abs(input_features)
-                feature_max = np.max(feature_abs)
-                
-                if feature_max > 0:
-                    # 填充输入节点
-                    for i in range(25):
-                        # 计算归一化激活值
-                        normalized_feature = feature_abs[i] / feature_max
-                        self._fill_node_by_activation(f'input_{i}', normalized_feature)
-                
-                print(f"使用Flatten特征填充输入节点，特征范围: {np.min(input_features):.4f} 到 {np.max(input_features):.4f}")
-                
-                # 2. 处理隐藏节点 - 模拟全连接层内部隐藏层
-                if hasattr(self, 'output_weights'):
-                    # 一个简单的模拟：使用输出层权重计算隐藏层激活
-                    # 实际上应该获取隐藏层的真实激活值，但简化起见我们做一个模拟
-                    
-                    # 选择部分特征和权重进行隐藏层计算
-                    selected_features = features[:min(100, feature_len)]  # 使用前100个特征
-                    
-                    # 创建随机隐藏层权重作为模拟（实际应从模型中提取）
-                    if not hasattr(self, 'hidden_layer_weights'):
-                        np.random.seed(42)
-                        self.hidden_layer_weights = np.random.uniform(-0.5, 0.5, (len(selected_features), 25))
-                    
-                    # 计算隐藏层激活
-                    hidden_activations = np.zeros(25)
-                    for i in range(len(selected_features)):
-                        for j in range(25):
-                            hidden_activations[j] += selected_features[i] * self.hidden_layer_weights[i][j]
-                    
-                    # 应用ReLU
-                    hidden_activations = np.maximum(0, hidden_activations)
-                    
-                    # 归一化
-                    max_hidden = np.max(hidden_activations)
-                    if max_hidden > 0:
-                        for j in range(25):
-                            normalized_hidden = hidden_activations[j] / max_hidden
-                            self._fill_node_by_activation(f'hidden_{j}', normalized_hidden)
-                else:
-                    # 如果没有权重，使用简化模型
-                    for j in range(25):
-                        # 使用后25个特征作为隐藏层激活
-                        if j + 25 < feature_len:
-                            hidden_val = np.abs(features[j + 25]) / feature_max if feature_max > 0 else 0
-                            self._fill_node_by_activation(f'hidden_{j}', hidden_val)
-            else:
-                # 如果没有特征提取器，回退到原始方法
-                # 输入节点显示原始图像，隐藏节点使用模拟激活
-                input_data = np.zeros(25)
-                if hasattr(self, 'grid_state'):
-                    if self.grid_state.shape == (28, 28) or self.grid_state.shape == (28, 28, 1):
-                        flat_grid = self.grid_state.reshape(28, 28)
-                        for i in range(5):
-                            for j in range(5):
-                                row_start = j * 5
-                                col_start = i * 5
-                                patch = flat_grid[row_start:row_start+5, col_start:col_start+5]
-                                input_data[i*5+j] = np.max(patch)
-                
-                # 输入节点使用原始图像
-                for i in range(25):
-                    self._fill_node_by_activation(f'input_{i}', input_data[i])
-                
-                # 隐藏节点使用模拟计算
-                if not hasattr(self, 'input_hidden_weights'):
-                    np.random.seed(42)
-                    self.input_hidden_weights = np.random.uniform(-0.5, 0.5, (25, 25))
-                
-                # 计算隐藏层激活
-                hidden_activations = np.zeros(25)
-                for i in range(25):
-                    for j in range(25):
-                        hidden_activations[j] += input_data[i] * self.input_hidden_weights[i][j]
-                
-                hidden_activations = np.maximum(0, hidden_activations)
-                max_hidden = np.max(hidden_activations)
-                
-                if max_hidden > 0:
-                    for j in range(25):
-                        normalized_hidden = hidden_activations[j] / max_hidden
-                        self._fill_node_by_activation(f'hidden_{j}', normalized_hidden)
-                
-                print("使用原始图像和模拟权重（特征提取器不可用）")
+            input_activations = np.zeros(25)
+            hidden_activations = np.zeros(25)
             
-            # 3. 处理输出节点 - 使用softmax概率
+            # 1. 处理输入节点 - 使用简化的方法直接从grid_state计算
+            if hasattr(self, 'grid_state'):
+                flat_grid = self.grid_state.reshape(28, 28)
+                for i in range(5):
+                    for j in range(5):
+                        patch = flat_grid[j*5:j*5+5, i*5:i*5+5]
+                        input_activations[i*5+j] = np.mean(patch)
+                        # 填充输入节点
+                        self._fill_node_by_activation(f'input_{i*5+j}', input_activations[i*5+j])
+                
+                print(f"输入激活值范围: [{np.min(input_activations):.3f}, {np.max(input_activations):.3f}]")
+            
+            # 2. 处理隐藏节点 - 使用简化的前向传播
+            if not hasattr(self, 'input_hidden_weights'):
+                np.random.seed(42)  # 确保权重初始化一致
+                self.input_hidden_weights = np.random.uniform(-0.5, 0.5, (25, 25))
+                print("初始化输入-隐藏层权重")
+            
+            # 计算隐藏层激活
+            hidden_activations = np.maximum(0, np.dot(input_activations, self.input_hidden_weights))
+            if np.max(hidden_activations) > 0:
+                hidden_activations /= np.max(hidden_activations)
+            
+            # 填充隐藏节点
+            for j in range(25):
+                self._fill_node_by_activation(f'hidden_{j}', hidden_activations[j])
+            
+            print(f"隐藏层激活值范围: [{np.min(hidden_activations):.3f}, {np.max(hidden_activations):.3f}]")
+            
+            # 3. 更新输入层到隐藏层的连接
+            input_threshold = 0.01  # 降低阈值
+            hidden_threshold = 0.01  # 降低阈值
+            
+            active_connections = 0
+            total_connections = 0
+            
+            for i in range(25):
+                for j in range(25):
+                    tag = f'ih_{i}_{j}'
+                    items = self.nn_canvas.find_withtag(tag)
+                    total_connections += 1
+                    
+                    if items:
+                        active = input_activations[i] > input_threshold and hidden_activations[j] > hidden_threshold
+                        weight = self.weights['input_hidden'][i][j]
+                        color = self.line_color(weight, active)
+                        width = 3 if active else 0.5
+                        
+                        self.nn_canvas.itemconfig(tag, 
+                                                fill=color,
+                                                width=width)
+                        
+                        if active:
+                            active_connections += 1
+                            print(f"激活连接 {tag}: weight={weight:.3f}, color={color}")
+                    else:
+                        print(f"警告: 未找到连接 {tag}")
+            
+            print(f"输入-隐藏层连接统计: {active_connections}/{total_connections} 个连接被激活")
+            
+            # 4. 更新隐藏层到输出层的连接
+            for j in range(25):
+                for k in range(11):
+                    tag = f'ho_{j}_{k}'
+                    items = self.nn_canvas.find_withtag(tag)
+                    if items:
+                        active = hidden_activations[j] > hidden_threshold and probabilities[k] > 0.05
+                        weight = self.weights['hidden_output'][j][k]
+                        color = self.line_color(weight, active)
+                        self.nn_canvas.itemconfig(tag, 
+                                                fill=color,
+                                                width=3 if active else 0.5)
+            
+            # 5. 更新输出节点
             for k in range(11):
                 self._fill_node_by_activation(f'output_{k}', probabilities[k])
             
             # 打印预测结果
             predicted_digit = np.argmax(probabilities)
-            print(f"预测结果: {predicted_digit} (置信度: {np.max(probabilities)*100:.2f}%)")
+            print(f"预测结果: {predicted_digit} (置信度: {probabilities[predicted_digit]*100:.2f}%)")
     
     def _reset_all_node_fills(self):
         """重置所有节点的填充效果"""
