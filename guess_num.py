@@ -56,12 +56,26 @@ class HandwritingInput:
         self.grid_size = grid_size
         self.cell_size = cell_size
 
-        # 初始化画布
+        # 添加使用说明
+        instructions = [
+            "CC无聊纯娱乐",
+        ]
+
+        for instruction in instructions:
+            instruction_label = tk.Label(
+                text=instruction,
+                font=('Arial', 20),
+                foreground='#0066cc'
+            )
+            instruction_label.pack(anchor="w", padx=5, pady=(0, 3))
+            instruction_label.grid(row=0, column=0, padx=10, pady=(5, 0), sticky="ew")
+
+        # 初始化画布 - 减少画布上方的padding
         self.canvas = tk.Canvas(parent,
                               width=grid_size*cell_size,
                               height=grid_size*cell_size,
                               bg='white')
-        self.canvas.grid(row=0, column=0, padx=10, pady=10)
+        self.canvas.grid(row=1, column=0, padx=10, pady=(3, 10))
 
         # 绘图状态
         self.grid_state = np.zeros((grid_size, grid_size))
@@ -139,7 +153,7 @@ class HandwritingInput:
                 self.canvas.create_line(
                     self.last_pos[0], self.last_pos[1],
                     event.x, event.y,
-                    width=10, fill='black' if not erase else 'white'
+                    width=20, fill='black' if not erase else 'white'
                 )
             self.last_pos = (event.x, event.y)
 
@@ -209,16 +223,27 @@ class HandwritingInput:
         self.canvas.delete('all')
         self.draw_grid()
         
+        # 在清除画布后，将"未识别"节点填充为黑色
+        if hasattr(self, 'nn_canvas'):
+            # 重置所有节点
+            self._reset_all_node_fills()
+            # 将未识别节点(索引10)填满
+            self.nn_canvas.itemconfig('output_10', fill='black')
+            # 重置其他输出节点
+            for k in range(10):
+                self.nn_canvas.itemconfig(f'output_{k}', fill='white')
+
     def line_color(self, weight):
         """根据权重值设置连接线颜色"""
         color = 'green' if weight > 0 else 'red'
-        alpha = min(abs(weight), 1.0)
-        return f'#{int(alpha*100):02x}ff{int(alpha*100):02x}' if color == 'green' else f'#ff{int(alpha*100):02x}{int(alpha*100):02x}'
-    
+        alpha = min(abs(weight), 0.1)
+        #return f'#{int(alpha*30):02x}ff{int(alpha*30):02x}' if color == 'green' else f'#ff{int(alpha*30):02x}{int(alpha*30):02x}'
+        return "#dddddd"
+
     def draw_neural_network(self):
         """绘制神经网络可视化图"""
         self.nn_frame = ttk.LabelFrame(self.parent, text="神经网络可视化")
-        self.nn_frame.grid(row=0, column=1, padx=10, pady=10)
+        self.nn_frame.grid(row=0, column=1, rowspan=2, padx=10, pady=10, sticky="ns")
 
         self.nn_width = 800
         self.nn_height = 700
@@ -285,15 +310,13 @@ class HandwritingInput:
             # 添加标签
             label_text = str(k) if k < 10 else "未识别"
             self.nn_canvas.create_text(
-                layer_x[2] + 20, y,
+                layer_x[2] + 50, y,
                 text=label_text,
                 font=('Arial', 8)
             )
 
-        # 添加层标签
-        self.nn_canvas.create_text(layer_x[0], 20, text="输入层 (25)", font=('Arial', 10))
-        self.nn_canvas.create_text(layer_x[1], 20, text="隐藏层 (25)", font=('Arial', 10))
-        self.nn_canvas.create_text(layer_x[2], 20, text="输出层 (11)", font=('Arial', 10))
+        # 初始状态下将"未识别"节点填充为黑色
+        self.nn_canvas.itemconfig('output_10', fill='black')
 
     def create_and_train_cnn_model(self):
         """创建并训练定制CNN模型"""
@@ -451,8 +474,8 @@ class HandwritingInput:
         ]
         
         # 训练参数
-        epochs = 10  # 增加epochs但使用early stopping
-        batch_size = 64
+        epochs = 20  # 增加epochs但使用early stopping
+        batch_size = 128
         
         # 计算steps
         steps_per_epoch = len(x_train) // batch_size
@@ -545,6 +568,59 @@ class HandwritingInput:
                 cls_name = str(cls) if cls < 10 else "未识别"
                 print(f"类别 {cls_name} 的准确率: {cls_acc:.2f}%")
 
+    def extract_model_weights(self):
+        """从CNN模型中提取权重用于可视化"""
+        if hasattr(self, 'cnn_model'):
+            try:
+                # 先进行一次预测，确保模型被调用过
+                dummy_input = np.zeros((1, 28, 28, 1), dtype=np.float32)
+                self.cnn_model.predict(dummy_input, verbose=0)
+                
+                # 查找Flatten层的索引
+                flatten_layer_index = None
+                for i, layer in enumerate(self.cnn_model.layers):
+                    if isinstance(layer, Flatten):
+                        flatten_layer_index = i
+                        break
+                
+                if flatten_layer_index is not None:
+                    # 创建一个模型从输入到扁平化层
+                    self.feature_extractor = tf.keras.Model(
+                        inputs=self.cnn_model.input,
+                        outputs=self.cnn_model.layers[flatten_layer_index].output
+                    )
+                    print("特征提取器已创建，可以获取扁平化特征")
+                    
+                    # 获取最后一个Dense层的权重（连接到输出的权重）
+                    for layer in reversed(self.cnn_model.layers):
+                        if isinstance(layer, Dense) and layer.units == 11:  # 输出层
+                            self.output_weights = layer.get_weights()[0]  # weights[0]是权重矩阵
+                            self.output_bias = layer.get_weights()[1]    # weights[1]是偏置
+                            print(f"输出层权重形状: {self.output_weights.shape}")
+                            break
+                else:
+                    print("无法找到Flatten层，将使用随机权重进行可视化")
+                    # 创建随机权重作为备用
+                    self.weights = {
+                        'input_hidden': np.random.uniform(-0.5, 0.5, (25, 25)),
+                        'hidden_output': np.random.uniform(-0.5, 0.5, (25, 11))
+                    }
+            except Exception as e:
+                print(f"提取模型权重时出错: {e}")
+                print("将使用随机权重进行可视化")
+                # 创建随机权重作为备用
+                self.weights = {
+                    'input_hidden': np.random.uniform(-0.5, 0.5, (25, 25)),
+                    'hidden_output': np.random.uniform(-0.5, 0.5, (25, 11))
+                }
+        else:
+            print("模型不可用，将使用随机权重进行可视化")
+            # 创建随机权重作为备用
+            self.weights = {
+                'input_hidden': np.random.uniform(-0.5, 0.5, (25, 25)),
+                'hidden_output': np.random.uniform(-0.5, 0.5, (25, 11))
+            }
+
     def predict_digit(self):
         """预测画布上的数字"""
         # 检查模型是否存在
@@ -552,15 +628,23 @@ class HandwritingInput:
             if os.path.exists('mnist_model.h5'):
                 print("加载预训练MNIST模型...")
                 self.cnn_model = load_model('mnist_model.h5')
+                self.extract_model_weights()  # 提取权重和创建特征提取器
             else:
                 print("未找到预训练模型，开始训练MNIST模型...")
                 self.load_and_train_with_mnist()
+                self.extract_model_weights()  # 提取权重和创建特征提取器
 
         # 获取当前绘制的图像并调整为28x28
         input_image = self.get_grid_state()
         
         # 确保它是标准化的0-1浮点数
         input_image = input_image.reshape(1, 28, 28, 1).astype('float32')
+        
+        # 提取扁平化特征
+        self.last_features = None
+        if hasattr(self, 'feature_extractor'):
+            self.last_features = self.feature_extractor.predict(input_image, verbose=0)
+            print(f"特征向量形状: {self.last_features.shape}")
         
         # 预测
         predictions = self.cnn_model.predict(input_image, verbose=0)
@@ -582,15 +666,167 @@ class HandwritingInput:
     def update_neural_network_visualization(self, probabilities):
         """根据预测结果更新神经网络可视化"""
         if hasattr(self, 'nn_canvas'):
-            # 重置所有输出节点的颜色
-            for k in range(11):
-                self.nn_canvas.itemconfig(f'output_{k}', fill='white')
+            # 重置所有节点的填充效果
+            self._reset_all_node_fills()
+            
+            # 1. 处理输入节点 - 使用Flatten后的特征向量
+            if hasattr(self, 'feature_extractor') and hasattr(self, 'last_features') and self.last_features is not None:
+                # 使用提取的特征向量填充输入节点
+                features = self.last_features[0]  # 去掉batch维度
+                feature_len = len(features)
                 
-            # 根据概率值设置输出节点的颜色
+                # 选择或采样25个特征点用于输入节点
+                input_features = np.zeros(25)
+                if feature_len >= 25:
+                    # 均匀采样特征向量中的25个点
+                    indices = np.linspace(0, feature_len-1, 25).astype(int)
+                    input_features = features[indices]
+                else:
+                    # 如果特征少于25个，全部使用并填充
+                    input_features[:feature_len] = features
+                
+                # 对特征进行归一化 - 使用绝对值
+                feature_abs = np.abs(input_features)
+                feature_max = np.max(feature_abs)
+                
+                if feature_max > 0:
+                    # 填充输入节点
+                    for i in range(25):
+                        # 计算归一化激活值
+                        normalized_feature = feature_abs[i] / feature_max
+                        self._fill_node_by_activation(f'input_{i}', normalized_feature)
+                
+                print(f"使用Flatten特征填充输入节点，特征范围: {np.min(input_features):.4f} 到 {np.max(input_features):.4f}")
+                
+                # 2. 处理隐藏节点 - 模拟全连接层内部隐藏层
+                if hasattr(self, 'output_weights'):
+                    # 一个简单的模拟：使用输出层权重计算隐藏层激活
+                    # 实际上应该获取隐藏层的真实激活值，但简化起见我们做一个模拟
+                    
+                    # 选择部分特征和权重进行隐藏层计算
+                    selected_features = features[:min(100, feature_len)]  # 使用前100个特征
+                    
+                    # 创建随机隐藏层权重作为模拟（实际应从模型中提取）
+                    if not hasattr(self, 'hidden_layer_weights'):
+                        np.random.seed(42)
+                        self.hidden_layer_weights = np.random.uniform(-0.5, 0.5, (len(selected_features), 25))
+                    
+                    # 计算隐藏层激活
+                    hidden_activations = np.zeros(25)
+                    for i in range(len(selected_features)):
+                        for j in range(25):
+                            hidden_activations[j] += selected_features[i] * self.hidden_layer_weights[i][j]
+                    
+                    # 应用ReLU
+                    hidden_activations = np.maximum(0, hidden_activations)
+                    
+                    # 归一化
+                    max_hidden = np.max(hidden_activations)
+                    if max_hidden > 0:
+                        for j in range(25):
+                            normalized_hidden = hidden_activations[j] / max_hidden
+                            self._fill_node_by_activation(f'hidden_{j}', normalized_hidden)
+                else:
+                    # 如果没有权重，使用简化模型
+                    for j in range(25):
+                        # 使用后25个特征作为隐藏层激活
+                        if j + 25 < feature_len:
+                            hidden_val = np.abs(features[j + 25]) / feature_max if feature_max > 0 else 0
+                            self._fill_node_by_activation(f'hidden_{j}', hidden_val)
+            else:
+                # 如果没有特征提取器，回退到原始方法
+                # 输入节点显示原始图像，隐藏节点使用模拟激活
+                input_data = np.zeros(25)
+                if hasattr(self, 'grid_state'):
+                    if self.grid_state.shape == (28, 28) or self.grid_state.shape == (28, 28, 1):
+                        flat_grid = self.grid_state.reshape(28, 28)
+                        for i in range(5):
+                            for j in range(5):
+                                row_start = j * 5
+                                col_start = i * 5
+                                patch = flat_grid[row_start:row_start+5, col_start:col_start+5]
+                                input_data[i*5+j] = np.max(patch)
+                
+                # 输入节点使用原始图像
+                for i in range(25):
+                    self._fill_node_by_activation(f'input_{i}', input_data[i])
+                
+                # 隐藏节点使用模拟计算
+                if not hasattr(self, 'input_hidden_weights'):
+                    np.random.seed(42)
+                    self.input_hidden_weights = np.random.uniform(-0.5, 0.5, (25, 25))
+                
+                # 计算隐藏层激活
+                hidden_activations = np.zeros(25)
+                for i in range(25):
+                    for j in range(25):
+                        hidden_activations[j] += input_data[i] * self.input_hidden_weights[i][j]
+                
+                hidden_activations = np.maximum(0, hidden_activations)
+                max_hidden = np.max(hidden_activations)
+                
+                if max_hidden > 0:
+                    for j in range(25):
+                        normalized_hidden = hidden_activations[j] / max_hidden
+                        self._fill_node_by_activation(f'hidden_{j}', normalized_hidden)
+                
+                print("使用原始图像和模拟权重（特征提取器不可用）")
+            
+            # 3. 处理输出节点 - 使用softmax概率
             for k in range(11):
-                intensity = int(255 * probabilities[k])
-                color = f'#{255-intensity:02x}ff{255-intensity:02x}'
-                self.nn_canvas.itemconfig(f'output_{k}', fill=color)
+                self._fill_node_by_activation(f'output_{k}', probabilities[k])
+            
+            # 打印预测结果
+            predicted_digit = np.argmax(probabilities)
+            print(f"预测结果: {predicted_digit} (置信度: {np.max(probabilities)*100:.2f}%)")
+    
+    def _reset_all_node_fills(self):
+        """重置所有节点的填充效果"""
+        # 删除之前创建的所有填充
+        self.nn_canvas.delete("node_fill")
+        
+        # 将所有节点重置为白色
+        for i in range(25):
+            self.nn_canvas.itemconfig(f'input_{i}', fill='white', outline='black')
+            self.nn_canvas.itemconfig(f'hidden_{i}', fill='white', outline='black')
+        for k in range(11):
+            self.nn_canvas.itemconfig(f'output_{k}', fill='white', outline='black')
+    
+    def _fill_node_by_activation(self, node_id, activation_value):
+        """根据激活值对圆形节点进行部分填充"""
+        # 确保激活值在0-1范围内
+        activation_value = max(0.0, min(1.0, activation_value))
+        
+        # 如果激活值太小，不需要填充
+        if activation_value < 0.01:
+            return
+            
+        # 如果激活值接近1，直接把节点变黑
+        if activation_value > 0.95:
+            self.nn_canvas.itemconfig(node_id, fill='black')
+            return
+        
+        # 获取节点的坐标
+        coords = self.nn_canvas.coords(node_id)
+        if not coords or len(coords) != 4:
+            return
+            
+        x1, y1, x2, y2 = coords
+        
+        # 计算填充角度 (0度对应完全不填充, 360度对应完全填充)
+        fill_angle = int(360 * activation_value)
+        
+        # 创建黑色扇形填充
+        if fill_angle > 0:
+            self.nn_canvas.create_arc(
+                x1, y1, x2, y2,
+                start=90,                 # 从顶部开始填充
+                extent=fill_angle,        # 填充角度
+                fill='black',
+                outline='',              # 无边框
+                style='pieslice',        # 扇形样式
+                tags=("node_fill", f"{node_id}_fill")  # 添加标签以便后续管理
+            )
 
     def toggle_real_time_prediction(self):
         """切换实时预测模式"""
@@ -599,28 +835,6 @@ class HandwritingInput:
         print(f"实时预测模式已{status}")
         if hasattr(self, 'real_time_button'):
             self.real_time_button.config(text=f"实时预测: {'开启' if self.real_time_prediction else '关闭'}")
-
-    def extract_model_weights(self):
-        """从CNN模型中提取权重用于可视化"""
-        # 获取第一个全连接层的权重
-        dense_layer = None
-        for layer in self.cnn_model.layers:
-            if isinstance(layer, Dense):
-                dense_layer = layer
-                break
-        
-        if dense_layer is not None:
-            weights = dense_layer.get_weights()
-            if len(weights) >= 2:  # weights[0]是权重矩阵，weights[1]是偏置
-                # 简化权重以适应可视化
-                input_size = weights[0].shape[0]
-                output_size = weights[0].shape[1]
-                
-                # 将权重重塑为25x25和25x11的矩阵
-                self.weights = {
-                    'input_hidden': weights[0][:25, :25],  # 取前25个输入和隐藏节点
-                    'hidden_output': weights[0][25:50, :11]  # 取接下来的25个隐藏节点到输出
-                }
 
 
 if __name__ == "__main__":
@@ -632,7 +846,7 @@ if __name__ == "__main__":
     
     # 控制面板放在画布下方
     control_panel = ttk.Frame(root)
-    control_panel.grid(row=1, column=0, padx=10, pady=10)
+    control_panel.grid(row=2, column=0, padx=10, pady=10)
     
     # 清除按钮
     clear_button = ttk.Button(control_panel, text="清除画布", width=20, command=app.clear_canvas)
